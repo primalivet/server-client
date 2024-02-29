@@ -58,60 +58,67 @@ int main() {
     return 1;
   }
 
+  printf("Listening on port %d\n", PORT);
+
   /**
-   * Accept a connection
-   * - This call will block until a connection is made
-   * - This call returns us the file descriptor for the connection, so we can
-   *   use that to acctually read and write on this specific connection.
+   * Create a infinite loop to accept connections
    */
-  int conn_sockfd = accept(sockfd, NULL, NULL);
-  if (conn_sockfd < 0) {
-    perror("Failed to accept");
-    return 1;
+  while (1) {
+    /**
+     * Accept a connection
+     * - This call will block until a connection is made
+     * - This call returns us the file descriptor for the connection, so we can
+     *   use that to acctually read and write on this specific connection.
+     */
+    int conn_sockfd = accept(sockfd, NULL, NULL);
+    if (conn_sockfd < 0) {
+      perror("Failed to accept connection");
+      continue;
+    }
+
+    /**
+     * Create a buffer to read from
+     * - We also "clear" the buffer so that there isn't any garbage in memory
+     * from eariler connections
+     */
+    char buffer[BUFFER_SIZE];
+    memset(buffer, 0, BUFFER_SIZE);
+
+    /**
+     * Read the content of the connection into the buffer
+     */
+    ssize_t bytes_read = read(conn_sockfd, buffer, BUFFER_SIZE);
+    if (bytes_read < 0) {
+      perror("Failed to read conn_sockfd");
+      close(conn_sockfd);
+      return 1;
+    }
+
+    printf("Read %ld bytes: %s\n", bytes_read, buffer);
+
+    /**
+     * Create a static response in a HTTP standard
+     */
+    char *response_message = "HTTP/1.1 200 OK\r\n"
+                             "Content-Type: text/html\r\n"
+                             "Content-Length: 13\r\n"
+                             "\r\n"
+                             "Hello, World!";
+    /**
+     * Write the response to the connection socket
+     */
+    ssize_t bytes_written =
+        write(conn_sockfd, response_message, strlen(response_message));
+    if (bytes_written < 0) {
+      perror("Failed to write conn_sockfd");
+    }
+
+    /**
+     * Clean up the sockets used
+     */
+    close(conn_sockfd);
   }
-
-  /**
-   * Create a buffer to read from
-   * - We also "clear" the buffer so that there isn't any garbage in memory from
-   *   eariler connections
-   */
-  char buffer[BUFFER_SIZE];
-  memset(buffer, 0, BUFFER_SIZE);
-
-  /**
-   * Read the content of the connection into the buffer
-   */
-  ssize_t bytes_read = read(conn_sockfd, buffer, BUFFER_SIZE);
-  if (bytes_read < 0) {
-    perror("Failed to read conn_sockfd");
-    return 1;
-  }
-
-  printf("Read %ld bytes: %s\n", bytes_read, buffer);
-
-  /**
-   * Create a static response in a HTTP standard
-   */
-  char *response_message = "HTTP/1.1 200 OK\r\n"
-                           "Content-Type: text/html\r\n"
-                           "Content-Length: 13\r\n"
-                           "\r\n"
-                           "Hello, World!";
-  /**
-   * Write the response to the connection socket
-   */
-  ssize_t bytes_written =
-      write(conn_sockfd, response_message, strlen(response_message));
-  if (bytes_written < 0) {
-    perror("Failed to write conn_sockfd");
-    return 1;
-  }
-
-  /**
-   * Clean up the sockets used
-   */
-  close(conn_sockfd);
-  close(sockfd);
+  /* close(sockfd); */
 
   return 0;
 }
