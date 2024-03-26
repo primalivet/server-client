@@ -1,5 +1,7 @@
 #include <arpa/inet.h>
+#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -8,6 +10,27 @@
 #define PORT 8080
 #define CONN_BACKLOG 10
 
+/**
+ * We define a global to store our main socket file descriptor since we've to
+ * use it when cleaning up after a cancellation signal, in our case SIGINT
+ * (Ctrl+c).
+ */
+int sockfd;
+
+/**
+ * Cancellation signal handler
+ */
+
+void sigint_handler(int sig) {
+  if (sockfd) {
+    if (sig == SIGINT) {
+      printf("\nShutting down gracefully\n");
+      close(sockfd);
+      exit(0);
+    }
+  }
+}
+
 int main() {
   /**
    * Create a Socket to handle connections
@@ -15,11 +38,20 @@ int main() {
    * - By using SOCK_STREAM as socket type and "0" as socket protocol we use TCP
    *   connections.
    */
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  sockfd = socket(AF_INET, SOCK_STREAM, 0);
   if (sockfd < 0) {
     perror("Failed to create socket");
     return 1;
   }
+
+  /**
+   * Handle process signals, in our case we handle the SIGINT (user pressed 
+   * Ctrl+c). In case that happens we want to call our signal handler. Which
+   * in turn will close the main socket connection.
+   * - This is the reason why we need a global for the sockfd, to be able to
+   *   access it in the sigint_handler.
+   */
+  signal(SIGINT, sigint_handler);
 
   /**
    * Create a internet socket address (sock/addr/_in)
@@ -91,19 +123,18 @@ int main() {
     if (bytes_read < 0) {
       perror("Failed to read conn_sockfd");
       close(conn_sockfd);
-      return 1;
     }
 
     printf("Read %ld bytes: %s\n", bytes_read, buffer);
 
     /**
-     * Create a static response in a HTTP standard
+     * Create a static HTTP response
      */
     char *response_message = "HTTP/1.1 200 OK\r\n"
                              "Content-Type: text/html\r\n"
-                             "Content-Length: 13\r\n"
+                             "Content-Length: 18\r\n"
                              "\r\n"
-                             "Hello, World!";
+                             "Hello from server!";
     /**
      * Write the response to the connection socket
      */
@@ -118,7 +149,6 @@ int main() {
      */
     close(conn_sockfd);
   }
-  /* close(sockfd); */
 
   return 0;
 }
