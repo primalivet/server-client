@@ -33,7 +33,115 @@ void sigint_handler(int sig) {
   }
 }
 
+typedef int (*request_handler)(int);
+
+int req_handler(int fd) {
+  char *response = "HTTP/1.1 200 OK\r\n"
+                   "Content-Type: text/html\r\n"
+                   "Content-Length: 19\r\n"
+                   "\r\n"
+                   "Hello from handler!";
+  printf("Sending response to socket: %d\n", fd);
+  int bytes_written = write(fd, response, strlen(response));
+  if (bytes_written < 0) {
+    perror("Failed to write to socket");
+  }
+  return 1;
+}
+
+int loop(int conn_fd, struct sockaddr_in *addr, request_handler handler) {
+
+  fd_set master_fds;
+  fd_set read_fds;
+  int max_fd = conn_fd;
+
+  if (bind(conn_fd, (struct sockaddr *)addr, sizeof(*addr)) < 0) {
+    perror("Failed to bind connection socket to address");
+    return 1;
+  }
+
+  if (listen(conn_fd, CONN_BACKLOG) < 0) {
+    perror("Failed to listen on connection socket");
+    return 1;
+  }
+
+  FD_ZERO(&master_fds);
+  FD_SET(conn_fd, &master_fds);
+
+  printf("Listening on %s:%d\n", inet_ntoa(addr->sin_addr), PORT);
+
+  while (1) {
+    read_fds = master_fds;
+
+    if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) == -1) {
+      perror("Failed to select file descriptors");
+      exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i <= max_fd; i++) {
+      if (FD_ISSET(i, &read_fds)) {
+        if (i == conn_fd) {
+          struct sockaddr_in clientaddr;
+          socklen_t addrlen = sizeof(clientaddr);
+          char *human_readable_ip = inet_ntoa(clientaddr.sin_addr);
+          printf("Try accepting connection from %s socket %d\n", human_readable_ip,
+                 i);
+          int new_fd =
+              accept(conn_fd, (struct sockaddr *)&clientaddr, &addrlen);
+          if (new_fd == -1) {
+            perror("Failed to accept connection");
+          } else {
+            FD_SET(new_fd, &master_fds);
+            if (new_fd > max_fd) {
+              max_fd = new_fd;
+            }
+            printf("Accepted connection from %s on socket %d\n", human_readable_ip,
+                   new_fd);
+          }
+        } else {
+          char buffer[BUFFER_SIZE];
+          memset(buffer, 0, BUFFER_SIZE);
+          int read_bytes = read(i, buffer, sizeof(buffer));
+          if (read_bytes <= 0) {
+            if (read_bytes == 0) {
+              printf("Connection closed: socket %d hung up\n", i);
+            } else {
+              perror("Unable to read from socket");
+            }
+            close(i);
+            FD_CLR(i, &master_fds);
+          } else {
+            printf("Recived message from socket %d: %s\n", i, buffer);
+            handler(i);
+          }
+        }
+      }
+    }
+  }
+}
+
 int main() {
+  sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd < 0) {
+    perror("Failed to create socket");
+    return 1;
+  }
+
+  signal(SIGINT, sigint_handler);
+
+  struct sockaddr_in address;
+  address.sin_family = AF_INET;
+  address.sin_port = htons(PORT);
+  address.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  loop(sockfd, &address, req_handler);
+
+  return 0;
+}
+
+/// OTHER MAIN
+
+int main2() {
   /**
    * Create a Socket to handle connections
    * - By using AF_INET as domain we use IPv4 connections
