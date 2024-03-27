@@ -1,8 +1,10 @@
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/_types/_socklen_t.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -45,7 +47,7 @@ int main() {
   }
 
   /**
-   * Handle process signals, in our case we handle the SIGINT (user pressed 
+   * Handle process signals, in our case we handle the SIGINT (user pressed
    * Ctrl+c). In case that happens we want to call our signal handler. Which
    * in turn will close the main socket connection.
    * - This is the reason why we need a global for the sockfd, to be able to
@@ -86,69 +88,124 @@ int main() {
    * the queue
    */
   if (listen(sockfd, CONN_BACKLOG) < 0) {
-    perror("Failed to listen");
+    perror("Failed to listen on socket");
     return 1;
   }
+
+  /**
+   * Setup file descriptors needed for select
+   * - master_set holds all the file descriptors we should monitor
+   * - FD_ZERO initialized the master_set to be empty
+   * - FD_SET adds the sockfd file descriptor to the master set
+   * - fd_max keeps track of the highest number file descriptor, at this point
+   *   it's our only file descriptors, sockfd
+   */
+  fd_set master_set;
+  FD_ZERO(&master_set);
+  FD_SET(sockfd, &master_set);
+  int fd_max = sockfd;
+  fd_set read_fds;
 
   printf("Listening on port %d\n", PORT);
 
   /**
-   * Create a infinite loop to accept connections
+   * Start an infinite loop as we want to monitor for file descriptors forever,
+   * until the process is terminated
    */
   while (1) {
     /**
-     * Accept a connection
-     * - This call will block until a connection is made
-     * - This call returns us the file descriptor for the connection, so we can
-     *   use that to acctually read and write on this specific connection.
+     * Mark the "ready to be read" file descriptors with select
+     * - read_fds is a copy of master_set to use in select
+     * - select modifies the read_fds to indicate which file descriptors
+     *   are ready to be read.
      */
-    int conn_sockfd = accept(sockfd, NULL, NULL);
-    if (conn_sockfd < 0) {
-      perror("Failed to accept connection");
-      continue;
+    read_fds = master_set;
+    if (select(fd_max + 1, &read_fds, NULL, NULL, NULL) == -1) {
+      perror("Failed to select a file descriptor");
+      exit(EXIT_FAILURE);
     }
 
-    /**
-     * Create a buffer to read from
-     * - We also "clear" the buffer so that there isn't any garbage in memory
-     * from eariler connections
-     */
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, BUFFER_SIZE);
+    // Iterate over all the file descriptors
+    for (int i = 0; i <= fd_max; i++) {
+      // Check if the current file descriptor is ready to be read
+      if (FD_ISSET(i, &read_fds)) {
+        if (i == sockfd) {
+          // The listening file descriptor is ready, so there is a new
+          // connection
+          struct sockaddr_in clientaddr;
+          socklen_t addrlen = sizeof(clientaddr);
+          struct sockaddr *clientaddr_p = (struct sockaddr *)&clientaddr;
+          /**
+           * Here we accept the ready connection, so it does not block, since
+           * it's ready and therefore we're not waiting
+           */
+          int newfd = accept(sockfd, clientaddr_p, &addrlen);
 
-    /**
-     * Read the content of the connection into the buffer
-     */
-    ssize_t bytes_read = read(conn_sockfd, buffer, BUFFER_SIZE);
-    if (bytes_read < 0) {
-      perror("Failed to read conn_sockfd");
-      close(conn_sockfd);
-    }
+          if (newfd == -1) {
+            perror("Failed to accept connection");
+          } else {
+            /**
+             * Add the new connection file descriptor to the master_set so we
+             * can monitor it
+             */
+            FD_SET(newfd, &master_set);
+            if (newfd > fd_max) {
+              // Update the max file descriptor if nessasary
+              fd_max = newfd;
+            }
 
-    printf("Read %ld bytes: %s\n", bytes_read, buffer);
+            char *dot_notation_ipaddress = inet_ntoa(clientaddr.sin_addr);
+            printf("New connection from %s on socket %d\n",
+                   dot_notation_ipaddress, newfd);
+          }
+        } else {
+          // If it's not the listening socket, then it's a "data ready" on
+          // socket.
+          char buffer[BUFFER_SIZE];
+          // Initialize the buffer to be empty
+          memset(buffer, 0, BUFFER_SIZE);
+          // Try to read data from the socket
+          int nbytes = read(i, buffer, sizeof(buffer));
+          if (nbytes <= 0) {
+            /**
+             * If nbytes is 0 the socket hung up, otherwise (below zero) we had
+             * an error reading
+             */
+            if (nbytes == 0) {
+              printf("Connection closed: Socket %d hung up\n", i);
+            } else {
+              perror("Unable to read from socket");
+            }
 
-    /**
-     * Create a static HTTP response
-     */
-    char *response_message = "HTTP/1.1 200 OK\r\n"
+            /**
+             * Close the socket and remove it from the master_set so that we
+             * dont monitor it anymore
+             */
+            close(i);
+            FD_CLR(i, &master_set);
+          } else {
+            /**
+             * Socket was read successfully, process and respond.
+             */
+            printf("Recived message from socket %d: %s\n", i, buffer);
+
+            char *response = "HTTP/1.1 200 OK\r\n"
                              "Content-Type: text/html\r\n"
                              "Content-Length: 18\r\n"
                              "\r\n"
                              "Hello from server!";
-    /**
-     * Write the response to the connection socket
-     */
-    ssize_t bytes_written =
-        write(conn_sockfd, response_message, strlen(response_message));
-    if (bytes_written < 0) {
-      perror("Failed to write conn_sockfd");
-    }
 
-    /**
-     * Clean up the sockets used
-     */
-    close(conn_sockfd);
-  }
+            printf("Sending response to socket: %d\n", i);
+
+            /**
+              * Write the response to the current socket 
+              */
+            write(i, response, strlen(response));
+          }
+        }
+      } // close if FD_ISSET
+    }   // close for(i < fd_max)
+  }     // close while(1)
 
   return 0;
 }
